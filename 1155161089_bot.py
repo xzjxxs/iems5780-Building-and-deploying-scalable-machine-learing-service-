@@ -2,98 +2,105 @@
 # 1155161089 XUZijun
 # Deploying the Model as a Telegram Bot
 
-import time
+import socket
+import requests
+import validators
+from queue import Queue
+from threading import Thread
 from telegram.ext.updater import Updater
 from telegram.update import Update
 from telegram.ext.callbackcontext import CallbackContext
 from telegram.ext.commandhandler import CommandHandler
 from telegram.ext.messagehandler import MessageHandler
 from telegram.ext.filters import Filters
-import random
-from joblib import load
 
-class State:
-    def __init__(self):
-        self.statenum = "general"
-        self.model = 0
-        self.content = ""
 
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text(
-        "Hello sir, Welcome to demo bot.")
+user = None
+q1 = Queue()
+q2 = Queue()
 
-def help(update: Update, context: CallbackContext):
-    update.message.reply_text("""Available Commands :-
-    /hello - To reply you a hello
-    Otherwise - To pick a random number between 0 and 1""")
 
-def hello(update: Update, context: CallbackContext):
-    update.message.reply_text(
-        "Hello sir, Welcome to demo bot.")
-    
-def asmt2model1(update: Update, context: CallbackContext):
-    update.message.reply_text(
-        "What is the title of your message?")
-    s.statenum = "title"
-    s.model = 1
-
-def asmt2model1(update: Update, context: CallbackContext):
-    update.message.reply_text(
-        "What is the title of your message?")
-    s.statenum = "title"
-    s.model = 1
-    
-def asmt2model2(update: Update, context: CallbackContext):
-    update.message.reply_text(
-        "What is the title of your message?")
-    s.statenum = "title"
-    s.model = 2
-    
-def general(update: Update, context: CallbackContext):
-    if s.statenum == "title":
-        s.title = update.message.text
-        s.statenum = "content"
+# Process message from user
+def thread1():
+    def start(update: Update, context: CallbackContext):
         update.message.reply_text(
-            "What is the content of your message?")
-        return
-    
-    if s.statenum == "content":
-        s.content = update.message.text
-        s.statenum = "general"
-        # use the loaded model to get the predicted values
-        # output the result in the reply variable
-        if s.model == 1:
-            pre = model1.predict_proba([update.message.text])
-        if s.model == 2:
-            pre = model2.predict_proba([update.message.text])
-        if pre[0][1] < 0.4:
-            reply = "Your message is FAKE" + "(p = %.2f)" % pre[0][0]
-        elif pre[0][1] > 0.6:
-            reply = "The input message is REAL" + "(p = %.2f)" % pre[0][1]
+            "Hello sir, Welcome to demo bot."
+        )
+
+    def help(update: Update, context: CallbackContext):
+        update.message.reply_text("""Available Commands :=
+        /hello - To reply you a hello.
+        Otherwise - Send an image or the url of the image to predict what bird""")
+
+    def hello(update: Update, context: CallbackContext):
+        update.message.reply_text(
+            "Hello sir, Welcome to demo bot."
+        )
+
+    def image_handler(update: Update, context: CallbackContext):
+        global user
+        user = update
+        file = update.message.photo[-1].file_id
+        obj = context.bot.get_file(file)
+        b = obj.download_as_bytearray()
+
+        q1.put(b)
+        update.message.reply_text("Received image, predicting!")
+
+    def text_handler(update: Update, context: CallbackContext):
+        global user
+        v = validators.url(update.message.text)
+        if v:
+            user = update
+            update.message.reply_text("Downloading your image from: {}, please wait!".format(update.message.text))
+            r = requests.get(update.message.text, timeout=20)
+            update.message.reply_text("Predicting!")
+            q1.put(r.content)
         else:
-            reply = "Cannot determine if the message is FAKE or REAL" + "(p = %.2f)" % pre[0][1]
-        update.message.reply_text(reply)
-        return
-    
+            update.message.reply_text("{} is not a valid URL to download the image!".format(update.message.text))
 
-if __name__ == "__main__":
-    # REQUEST_KWARGS = {
-    #    'proxy_url': 'http://127.0.0.1:7890',
-    # }
-    # Provide your bot's token
-    # updater = Updater("5252978559:AAFY4yiCU0aWcICh7gDzBgHCiWevdfYZnc0", use_context=True,  request_kwargs = REQUEST_KWARGS)
-    updater = Updater("5252978559:AAFY4yiCU0aWcICh7gDzBgHCiWevdfYZnc0", use_context=True)
-
-    # In assignment, if you need to load the model, load it here
-    model1 = load("Count_1155161089.pkl")
-    model2 = load("Tfid_1155161089.pkl")
-    
-    s = State()
+    REQUEST_KWARGS = {
+        'proxy_url': 'http://127.0.0.1:7890',
+    }
+    updater = Updater("5252978559:AAFY4yiCU0aWcICh7gDzBgHCiWevdfYZnc0", use_context=True, request_kwargs=REQUEST_KWARGS)
 
     updater.dispatcher.add_handler(CommandHandler('start', start))
     updater.dispatcher.add_handler(CommandHandler('help', help))
     updater.dispatcher.add_handler(CommandHandler('hello', hello))
-    updater.dispatcher.add_handler(CommandHandler('asmt2model1', asmt2model1))
-    updater.dispatcher.add_handler(CommandHandler('asmt2model2', asmt2model2))
-    updater.dispatcher.add_handler(MessageHandler(Filters.text, general))
+    updater.dispatcher.add_handler(MessageHandler(Filters.text, text_handler))
+    updater.dispatcher.add_handler(MessageHandler(Filters.photo, image_handler))
     updater.start_polling()
+
+
+# Communicate with the server that is running the image classification
+def thread2():
+    while True:
+        message = q1.get()
+        soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        soc.connect(("127.0.0.1", 8080))
+        soc.send(message)
+        data = soc.recv(1024).decode("UTF-8")
+        q2.put(data)
+        soc.close()
+
+
+# Send response to user
+def thread3():
+    while True:
+        message = q2.get()
+        user.message.reply_text(message)
+
+
+threads = list()
+
+messageThread = Thread(target=thread1)
+messageThread.start()
+threads.append(messageThread)
+
+tcpThread = Thread(target=thread2)
+tcpThread.start()
+threads.append(tcpThread)
+
+replyThread = Thread(target=thread3)
+replyThread.start()
+threads.append(replyThread)
